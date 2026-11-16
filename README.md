@@ -26,9 +26,9 @@ Local benchmark over the 720 practice cases (5 rounds, median):
 
 | parser | median |
 |---|---|
-| marked 18.1.3 (baseline) | ~724 ms |
-| this `parse.js` | ~656 ms |
-| **speedup** | **~1.10x** |
+| marked 18.1.3 (baseline) | ~668 ms |
+| this `parse.js` | ~454 ms |
+| **speedup** | **~1.47x** |
 
 Practice score: **720/720** cases byte-identical to marked. Run it yourself with `node probe/bench.mjs` (from the workspace root; the probe scripts live outside the repo).
 

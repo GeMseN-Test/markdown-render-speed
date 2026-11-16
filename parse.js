@@ -199,6 +199,7 @@ const BLOCK_SKIP_RE = /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[
 // and mask the wrong span).
 const MASK_LINK_RE = /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)/y;
 const MASK_HTML_RE = /<(?! )[^<>]*?>/y;
+const MASK_SCAN_RE = /[\\`[!<]/g;
 
 // Does the text contain a link that resolves (used while masking reflinks)?
 function linkInText(text, links) {
@@ -268,14 +269,18 @@ function maskSrc(src, links) {
     if (changed) masked = out + src.slice(last);
   }
   const chars = masked.split('');
-  // Escapes, code spans, inline links and html, in one left-to-right pass.
-  let j = 0;
-  while (j < n) {
+  // Jump straight to the next char that can start a maskable construct
+  // (escape, code span, link, html) instead of walking every character:
+  // long runs are mostly plain text.
+  MASK_SCAN_RE.lastIndex = 0;
+  let mj;
+  while ((mj = MASK_SCAN_RE.exec(masked)) !== null) {
+    const j = mj.index;
     const c = masked[j];
     if (c === '\\' && j + 1 < n && isPunct(masked[j + 1])) {
       chars[j] = '+';
       chars[j + 1] = '+';
-      j += 2;
+      MASK_SCAN_RE.lastIndex = j + 2;
       continue;
     }
     if (c === '`') {
@@ -288,7 +293,7 @@ function maskSrc(src, links) {
         chars[j + run] = '[';
         chars[end - 1] = ']';
         fillSpan(chars, j + run, end);
-        j = end;
+        MASK_SCAN_RE.lastIndex = end;
         continue;
       }
       // A backtick run that opens no code span is literal in full: skip
@@ -296,7 +301,7 @@ function maskSrc(src, links) {
       // wrongly pair with a backtick inside the run).
       let k = j + 1;
       while (k < n && masked[k] === '`') k++;
-      j = k;
+      MASK_SCAN_RE.lastIndex = k;
       continue;
     }
     if (c === '[' || (c === '!' && masked[j + 1] === '[')) {
@@ -308,10 +313,9 @@ function maskSrc(src, links) {
         chars[at] = '[';
         chars[end - 1] = ']';
         fillSpan(chars, at, end);
-        j = end;
+        MASK_SCAN_RE.lastIndex = end;
         continue;
       }
-      j++;
       continue;
     }
     if (c === '<') {
@@ -322,13 +326,11 @@ function maskSrc(src, links) {
         chars[j] = '[';
         chars[end - 1] = ']';
         fillSpan(chars, j, end);
-        j = end;
+        MASK_SCAN_RE.lastIndex = end;
         continue;
       }
-      j++;
       continue;
     }
-    j++;
   }
   return chars.join('');
 }
@@ -339,60 +341,61 @@ function maskSrc(src, links) {
 // (a special char, a br trigger, a url/email/www trigger, or the end).
 // runStart is the index where this text run began (url triggers are only
 // checked after it, since the main loop already tried url at runStart).
+// One native regex scan for the next text-run stop (special char or a
+// url/email/www/br trigger) instead of a per-character loop: the long
+// generated docs are mostly plain text, so jumping straight to the next
+// stop is far cheaper than testing every character.
+const TEXT_STOP_RE = /[\\<`*!_~\[]|[hH][tT][tT][pP][sS]?:\/\/|[fF][tT][pP]:\/\/|www\.|mailto:|xmpp:|@| {2,}\n/g;
 function textRunEnd(src, i, n, runStart) {
-  let j = i;
-  while (j < n) {
-    const c = src[j];
-    if (c === '\\' || c === '<' || c === '!' || c === '[' || c === '`'
-        || c === '*' || c === '~' || c === '_') return j;
-    if (j > runStart && (c === 'h' || c === 'H' || c === 'f' || c === 'F')) {
-      // http://, https://, ftp:// (case-insensitive, no allocation).
-      const a = src[j + 1], b = src[j + 2], d = src[j + 3];
-      if ((c === 'h' || c === 'H') && (a === 't' || a === 'T') && (b === 't' || b === 'T') && (d === 'p' || d === 'P')) {
-        if (src[j + 4] === ':' && src[j + 5] === '/' && src[j + 6] === '/') return j;
-        if ((src[j + 4] === 's' || src[j + 4] === 'S') && src[j + 5] === ':' && src[j + 6] === '/' && src[j + 7] === '/') return j;
-      } else if ((c === 'f' || c === 'F') && (a === 't' || a === 'T') && (b === 'p' || b === 'P') && d === ':' && src[j + 4] === '/' && src[j + 5] === '/') return j;
-    }
-    // www. trigger: only when the previous char is whitespace, *, _, ~ or (.
-    if (j > runStart && c === 'w' && src.startsWith('www.', j)) {
-      const p = src[j - 1];
-      if (p === ' ' || p === '\t' || p === '\n' || p === '\r' || p === '*' || p === '_' || p === '~' || p === '(') return j;
-    }
-    // mailto:/xmpp: trigger: the text ends AFTER the non-alnum char before it.
-    if (j > runStart && (c === 'm' || c === 'x')) {
-      if ((src.startsWith('mailto:', j) || src.startsWith('xmpp:', j)) && !isAlnumCh(src[j - 1])) return j + 1;
-    }
-    // Email trigger: a non-email char followed by an email run + '@'.
-    // The text ends AFTER that non-email char. No j > runStart guard:
-    // the main loop never tried tryUrl at a non-email char, so an email
-    // starting right after the run's first char (e.g. '_ note@x') must
-    // still be caught here.
-    if (!isEmailCh(c) && j + 1 < n && isEmailCh(src[j + 1])) {
-      let k = j + 1;
-      while (k < n && isEmailCh(src[k])) k++;
-      if (src[k] === '@') return j + 1;
-    }
-    if (c === ' ') {
-      // br trigger: 2+ spaces then \n — the text ends before the spaces.
-      if (src[j + 1] === ' ') {
-        let k = j + 2;
-        while (src[k] === ' ') k++;
-        if (src[k] === '\n') return j;
-      }
-      j++;
+  TEXT_STOP_RE.lastIndex = i;
+  let m;
+  while ((m = TEXT_STOP_RE.exec(src)) !== null) {
+    const p = m.index;
+    if (p >= n) return n;
+    const t = m[0];
+    // Email '@' is a single char but needs the run-scan below, not a
+    // plain stop.
+    if (t === '@') {
+      let s = p - 1;
+      while (s >= i && isEmailCh(src[s])) s--;
+      s++;
+      if (s > i) return s;
       continue;
     }
-    j++;
+    // Single special char: stop here.
+    if (t.length === 1) return p;
+    // URL: only after the run start (the main loop tried it at runStart).
+    const c0 = t.charCodeAt(0);
+    if (c0 === 104 || c0 === 72 || c0 === 102 || c0 === 70) { // h H f F
+      if (p > runStart) return p;
+      continue;
+    }
+    // www.: only after the run start and a trigger char before it.
+    if (t === 'www.') {
+      if (p > runStart) {
+        const pv = src[p - 1];
+        if (pv === ' ' || pv === '\t' || pv === '\n' || pv === '\r' || pv === '*' || pv === '_' || pv === '~' || pv === '(') return p;
+      }
+      continue;
+    }
+    // mailto:/xmpp:: only after the run start and a non-alnum before it;
+    // the run ends AFTER the trigger's first char.
+    if (t === 'mailto:' || t === 'xmpp:') {
+      if (p > runStart && !isAlnumCh(src[p - 1])) return p + 1;
+      continue;
+    }
+    // Br: 2+ spaces then newline — the run ends before the spaces.
+    return p;
   }
   return n;
 }
 
 // fe(): the last possible closer index for a delimiter in the masked source.
 // A run counts when the char before it is not whitespace; the last such run wins.
-function findCloser(masked, delim) {
+function findCloser(masked, delim, from) {
   let last = -1;
   const n = masked.length;
-  let s = 0;
+  let s = from || 0;
   while (s < n) {
     const r = masked[s];
     if (r !== '*' && r !== '_' && r !== '~') { s++; continue; }
@@ -483,7 +486,7 @@ function tryEmStrong(src, i, masked, st, prevChar) {
   const y = extLen;
   const R = !!p.trim() && (!!d || (r === '*' && !h));
   const o = prevChar === r;
-  const v = findCloser(masked, r);
+  const v = findCloser(masked, r, i);
   const Q = i + k;
   if (v < Q) return null;
   // Skip a delimiter hidden inside the opposite strong span at the start
