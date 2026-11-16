@@ -1,18 +1,17 @@
-// A fast, dependency-free CommonMark 0.31.2 + GFM 0.29 renderer whose
-// parse(markdown) returns exactly the HTML marked 18.1.3 produces with its
-// default options (GFM on, breaks off). Written from the CommonMark and GFM
-// specs and from marked's observable behaviour; it imports nothing and holds
-// no per-case state, so every call renders its input alone.
+// A fast, dependency-free CommonMark 0.31.2 + GFM 0.29 renderer.
+// parse(markdown) returns exactly the HTML that marked 18.1.3 emits with
+// its default options (GFM on, breaks off). It imports nothing and keeps
+// no state between calls, so each call renders its input on its own.
 //
-// How it works, in brief:
-//  * the block layer splits the input into lines and lexes blocks (headings,
-//    fences, lists, blockquotes, tables, HTML blocks, paragraphs) into small
-//    token objects, then renders them;
-//  * the inline layer walks one paragraph's text left to right. Emphasis is
-//    the hard part: before scanning for `*`/`_` delimiters it builds a
+// Layout of the implementation:
+//  * the block layer splits the input into lines, lexes blocks (headings,
+//    fences, lists, blockquotes, tables, HTML blocks, paragraphs) into
+//    small token objects, then renders them;
+//  * the inline layer walks one paragraph left to right. Emphasis is the
+//    tricky part: before scanning for `*`/`_` delimiters it builds a
 //    "masked" copy of the text where code spans, links and raw HTML are
-//    blanked out, so emphasis can never see inside them;
-//  * link reference definitions are collected while lexing blocks and are
+//    blanked out, so emphasis can never peek inside them;
+//  * link reference definitions are gathered while lexing blocks and are
 //    consulted when inline links are rendered.
 
 'use strict';
@@ -185,8 +184,6 @@ const REFLINK_SEARCH_RE = new RegExp('!?\\[' + _LT + '\\]\\[' + _BE + '\\]|!?\\[
 // Inline code span (sticky).
 const INLINE_CODE_RE = /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/y;
 
-// The `punctuation` character class as a regex (for the LDelim check).
-const PUNCT_CLASS_RE = /((?![*_])[\s\p{P}\p{S}])/u;
 const UNICODE_ALNUM_RE = /[\p{L}\p{N}]/u;
 
 // ---------- masked source ----------
@@ -1108,7 +1105,6 @@ function unescapePunct(str) {
 
 // marked's definition pattern: [label]: <dest> "title" — the title may be
 // on the next line; a single-quoted title may not contain a blank line.
-const DEF_LABEL = /^\s*\[((?:\\[\s\S]|[^\]])+)\]:/;
 const DEF_RE = new RegExp(
   '^\\s*\\[((?:\\\\[\\s\\S]|[^\\]])+)\\]:[ \\t]*\\n?[ \\t]*'
   + '(?:<(?:\\\\.|[^\\n<>\\\\])*>|[^ \\t\\n\\x00-\\x1f<][^ \\t\\n\\x00-\\x1f]*)'
