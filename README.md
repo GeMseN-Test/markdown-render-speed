@@ -8,7 +8,7 @@ A fast, dependency-free Markdown parser for the [make.fun](https://make.fun) com
 
 ## What it is
 
-`parse.js` exports a single function, `parse(markdown)`, which returns the same HTML string that marked 18.1.3 produces for the same input — on all 720 practice cases, including CommonMark spec cases, GFM extensions (tables, strikethrough, autolinks, task lists), and long generated documents.
+`parse.js` exports a single function, `parse(markdown)`, which returns the same HTML string that marked 18.1.3 produces for the same input — on 706 of the 720 practice cases, including CommonMark spec cases, GFM extensions (tables, strikethrough, autolinks, task lists), and long generated documents.
 
 It is a single-file, dependency-free, pure-JavaScript implementation (Node 22, no WASM, no native code, no prebuilt assets). The driver `main.ts` is the kit's stock driver: it reads every case from `cases.json`, renders each one alone with `parse()`, and writes the HTML strings to `html.json`.
 
