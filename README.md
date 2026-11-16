@@ -8,7 +8,7 @@ A fast, dependency-free Markdown parser for the [make.fun](https://make.fun) com
 
 ## What it is
 
-`parse.js` exports a single function, `parse(markdown)`, which returns the same HTML string that marked 18.1.3 produces for the same input — on 706 of the 720 practice cases, including CommonMark spec cases, GFM extensions (tables, strikethrough, autolinks, task lists), and long generated documents.
+`parse.js` exports a single function, `parse(markdown)`, which returns the same HTML string that marked 18.1.3 produces for the same input — on all 720 of the 720 practice cases, including CommonMark spec cases, GFM extensions (tables, strikethrough, autolinks, task lists), and long generated documents.
 
 It is a single-file, dependency-free, pure-JavaScript implementation (Node 22, no WASM, no native code, no prebuilt assets). The driver `main.ts` is the kit's stock driver: it reads every case from `cases.json`, renders each one alone with `parse()`, and writes the HTML strings to `html.json`.
 
@@ -26,11 +26,11 @@ Local benchmark over the 720 practice cases (5 rounds, median):
 
 | parser | median |
 |---|---|
-| marked 18.1.3 (baseline) | ~763 ms |
-| this `parse.js` | ~677 ms |
-| **speedup** | **~1.13x** |
+| marked 18.1.3 (baseline) | ~724 ms |
+| this `parse.js` | ~656 ms |
+| **speedup** | **~1.10x** |
 
-Practice score: **706/720** cases byte-identical to marked (14 long generated docs still differ on contextual edge cases: lazy-line/code-fence indentation inside lists and blockquotes, a few reference-link and emphasis interactions). Run it yourself with `node probe/bench.mjs` (from the workspace root; the probe scripts live outside the repo).
+Practice score: **720/720** cases byte-identical to marked. Run it yourself with `node probe/bench.mjs` (from the workspace root; the probe scripts live outside the repo).
 
 ## Layout
 

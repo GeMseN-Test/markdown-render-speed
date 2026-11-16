@@ -205,6 +205,10 @@ function linkInText(text, links) {
   if (!text.includes('[')) return false;
   BLOCK_SKIP_RE.lastIndex = 0;
   for (const m of text.matchAll(BLOCK_SKIP_RE)) {
+    // INLINE_LINK_RE is sticky: reset lastIndex before .test, or a
+    // leftover lastIndex from tryLink makes the test fail spuriously
+    // (which fully masked dropped reflinks and hid their emphasis).
+    INLINE_LINK_RE.lastIndex = 0;
     if (INLINE_LINK_RE.test(m[0]) && text.charAt(m.index - 1) !== '!') return true;
   }
   REFLINK_SEARCH_RE.lastIndex = 0;
@@ -518,6 +522,9 @@ function tryEmStrong(src, i, masked, st, prevChar) {
     // masked coordinates — the masked source aligns with src by index.
     const rawEnd = runStart + b;
     const raw = src.slice(i, rawEnd);
+    // Suppressed: emphasis spanning a double-backtick code span with an
+    // inner backtick, inside a [...] (...) link attempt.
+    if (suppressEmInLink(src, i, rawEnd, raw.slice(1, -1))) return null;
     if (Math.min(k, b) % 2) {
       const inner = raw.slice(1, -1);
       const innerHtml = inlineRun(inner, st);
@@ -528,6 +535,27 @@ function tryEmStrong(src, i, masked, st, prevChar) {
     return { end: rawEnd, html: st.textMode ? innerHtml : '<strong>' + innerHtml + '</strong>' };
   }
   return null;
+}
+
+// A double-backtick code span whose content itself contains a backtick
+// (`` a ` b ``). Emphasis spanning one of these inside a [...] (...)
+// inline-link attempt is NOT formed by marked (the link regex cannot
+// match the label, the link is dropped, and the emphasis is not
+// re-parsed); in a plain paragraph or a bare [...] it IS formed.
+const DBL_TICK_CODE_RE = /``[^`]*`[^`]*``/;
+function inInlineLinkAttempt(src, openIdx, closeIdx) {
+  const ob = src.lastIndexOf('[', openIdx);
+  if (ob < 0) return false;
+  // The '[' must still be open at the emphasis opener (no ']' between).
+  const cb = src.indexOf(']', ob);
+  if (cb >= 0 && cb < openIdx) return false;
+  // The bracket must close after the emphasis and be followed by '('.
+  const end = src.indexOf(']', closeIdx);
+  if (end < 0) return false;
+  return src[end + 1] === '(';
+}
+function suppressEmInLink(src, openIdx, closeIdx, inner) {
+  return DBL_TICK_CODE_RE.test(inner) && inInlineLinkAttempt(src, openIdx, closeIdx);
 }
 
 // Strikethrough. Delimiter-stack matching (like marked): an opener pairs
@@ -564,6 +592,9 @@ function tryDel(src, i, masked, st) {
           stack.splice(idx, 1);
           if (opener[0] === i) {
             const inner = src.slice(i + L, d);
+            // Suppressed: del spanning a double-backtick code span with
+            // an inner backtick, inside a [...] (...) link attempt.
+            if (suppressEmInLink(src, i, d + Ld, inner)) return null;
             const innerHtml = inlineRun(inner, st);
             return { end: d + Ld, html: st.textMode ? innerHtml : '<del>' + innerHtml + '</del>' };
           }
@@ -1227,11 +1258,20 @@ function readFenced(lines, i, f) {
     if (fenceClose(line, f.ch, f.len)) { closed = true; j++; break; }
     // marked's fence indent compensation: strip at most f.indent leading
     // whitespace CHARACTERS (not columns) per line; with indent 0 the
-    // content is untouched, so tabs survive verbatim.
-    const wm = /^[ \t]+/.exec(line);
+    // content is untouched, so tabs survive verbatim. Backtick fences
+    // only: marked does NOT dedent tilde-fence content by the fence
+    // indent (a `~~~` fence at 3 spaces keeps the 3 spaces in content).
+    const wm = f.ch === '`' ? /^[ \t]+/.exec(line) : null;
     const strip = wm ? Math.min(wm[0].length, f.indent) : 0;
     content.push(strip ? line.slice(strip) : line);
     j++;
+  }
+  // Trailing blank lines are dropped only when the fence is unterminated
+  // (runs to EOF): marked strips them there, but a closed fence keeps
+  // all but one trailing newline (codeTrail3: two blanks before the
+  // close stay as two trailing \n in the text).
+  if (!closed) {
+    while (content.length > 0 && isBlankLine(content[content.length - 1])) content.pop();
   }
   let text = content.join('\n');
   if (content.length > 0 && content[content.length - 1] !== '') text += '\n';
@@ -1470,10 +1510,11 @@ function readBlockquote(lines, i, outerLazy) {
     // paragraph (after code/heading the quote is over: '>     foo\nbar'
     // puts bar outside). A lazy list-marker line never continues it —
     // it starts a new list outside ('> - foo\n- bar', '> foo\n  - bar').
-    // A lazy line loses up to 4 indent columns ('    - bar' -> '- bar').
+    // A lazy line loses 4 indent columns only when it has 4 or more;
+    // 1-3 leading spaces are kept ('> foo\n bar' stays ' bar').
     if (!blankSince && endsPara && (isOuterLazy || endsInParagraph(line))) {
       if (!isOuterLazy && /^ {0,3}(?:[*+-]|1[.)])(?:[ \t]|$)/.test(line)) break;
-      content.push(stripIndent(line, 4));
+      content.push(indentOf(line, 0) >= 4 ? stripIndent(line, 4) : line);
       lazy.add(content.length - 1);
       blankSince = false;
       prevPlain = true;
@@ -1690,8 +1731,15 @@ function readList(lines, i, lazy, st) {
   let pendingBlanks = 0;
   // Fence state inside the current item: an open fence consumes following
   // lines (even unindented) as code, until its closing fence — but only
-  // while no blank line intervened.
+  // while no blank line intervened AND the fence has already consumed at
+  // least one indented content line. If the first line after the opener
+  // is unindented, it does not belong to the item, so the fence stays
+  // empty and the list ends ('1. foo\n\n   ```toml\nbar' -> empty fence,
+  // 'bar' a top-level paragraph). Once a fence has content, later
+  // unindented lines ARE swallowed ('   ~~~python\n   image\nmust...'
+  // keeps 'must...' inside the fence).
   let fence = null;
+  let fenceContent = false;
   const trackFence = (text) => {
     if (fence) {
       if (fenceClose(text, fence.ch, fence.len)) fence = null;
@@ -1708,6 +1756,7 @@ function readList(lines, i, lazy, st) {
     }
     pendingBlanks = 0;
     fence = null;
+    fenceContent = false;
     const line = lines[lineIdx];
     const content = [];
     const lazySet = new Set();
@@ -1745,8 +1794,10 @@ function readList(lines, i, lazy, st) {
     }
     const ind = indentOf(line, 0);
     const mi = markerInfo(line);
-    // An open fence swallows the line as code (lazy), no blank between.
-    if (fence && pendingBlanks === 0) {
+    // An open fence that already has content swallows the line as code
+    // (lazy), no blank between. Without content yet, an unindented line
+    // ends the item instead (see the fence-state comment above).
+    if (fence && fenceContent && pendingBlanks === 0) {
       const pushed = ind >= cur.contentIndent ? stripIndent(line, cur.contentIndent) : line;
       cur.content.push(pushed);
       trackFence(pushed);
@@ -1778,6 +1829,9 @@ function readList(lines, i, lazy, st) {
       addBlanks();
       const pushed = stripIndent(line, cur.contentIndent);
       cur.content.push(pushed);
+      // A line pushed while a fence is open is fence content, which
+      // arms the unindented-swallow above for later lines.
+      if (fence) fenceContent = true;
       trackFence(pushed);
       cur.hasContent = true;
       j++;
@@ -1894,7 +1948,12 @@ function lexBlocks(lines, lazy, st, bqLazy, inList) {
       const r = readHtmlBlock(lines, i, hk);
       // marked: trailing \n kept iff next line is non-blank, or the block
       // is last and the source ended with \n (final empty line element).
-      blocks.push({ type: 'html', text: r.text, nl: r.end < lines.length && (lines[r.end] !== '' || r.end === lines.length - 1) });
+      // For kinds 6/7 the block ends at a blank line, and a
+      // whitespace-only next line (tab/space) counts as blank, so no \n.
+      // For kinds 1-5 the block ends at an end marker, where a tab-only
+      // next line does NOT suppress the \n (comment/pre cases).
+      const nextIsBlank = (hk === 6 || hk === 7) ? isBlankLine(lines[r.end]) : lines[r.end] === '';
+      blocks.push({ type: 'html', text: r.text, nl: r.end < lines.length && (!nextIsBlank || r.end === lines.length - 1) });
       i = r.end;
       continue;
     }
