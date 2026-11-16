@@ -1347,34 +1347,6 @@ function stripBqMarker(line) {
   return after + rest.slice(i);
 }
 
-// Strip one level of blockquote markers from lines[i..j), returning
-// {content, lazy} — content lines and the set of indices (into content)
-// that were taken without a marker (lazy continuation lines).
-// A line whose first non-space char is '>' loses the marker; a line that
-// is not a quote line is taken as-is (lazy) unless it is blank (which is
-// also lazy but keeps its blankness).
-function blockquoteStrip(lines, i, j, outerLazy) {
-  const content = [];
-  const lazy = new Set();
-  for (let k = i; k < j; k++) {
-    const line = lines[k];
-    const stripped = stripBqMarker(line);
-    if (stripped !== null) {
-      content.push(stripped);
-    } else if (outerLazy && outerLazy.has(k)) {
-      content.push(line);
-      lazy.add(content.length - 1);
-    } else if (isBlankLine(line)) {
-      content.push('');
-      lazy.add(content.length - 1);
-    } else {
-      content.push(line);
-      lazy.add(content.length - 1);
-    }
-  }
-  return { content, lazy };
-}
-
 // Does this line start a block that interrupts a paragraph?
 // (heading, fence, hr, html block, list, table delimiter line, blockquote)
 function interruptsParagraph(line, prevText, inList) {
